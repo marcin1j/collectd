@@ -64,19 +64,27 @@ struct hostlist_s
 };
 typedef struct hostlist_s hostlist_t;
 
+struct hostgroup_s
+{
+  hostlist_t *hostlist_head;
+
+  char  *ping_source;
+#ifdef HAVE_OPING_1_3
+  char  *ping_device;
+#endif
+  int    ping_ttl;
+  double ping_interval;
+  double ping_timeout;
+  int    ping_max_missed;
+
+  struct hostgroup_s *next;
+};
+typedef struct hostgroup_s hostgroup_t;
+
 /*
  * Private variables
  */
-static hostlist_t *hostlist_head = NULL;
-
-static char  *ping_source = NULL;
-#ifdef HAVE_OPING_1_3
-static char  *ping_device = NULL;
-#endif
-static int    ping_ttl = PING_DEF_TTL;
-static double ping_interval = 1.0;
-static double ping_timeout = 0.9;
-static int    ping_max_missed = -1;
+struct hostgroup_s *hostgroup_head = NULL;
 
 static int             ping_thread_loop = 0;
 static int             ping_thread_error = 0;
@@ -150,6 +158,7 @@ static void time_calc (struct timespec *ts_dest, /* {{{ */
 
 static int ping_dispatch_all (pingobj_t *pingobj) /* {{{ */
 {
+  hostgroup_t *ptr = hostgroup_head;
   pingobj_iter_t *iter;
   hostlist_t *hl;
   int status;
@@ -177,7 +186,7 @@ static int ping_dispatch_all (pingobj_t *pingobj) /* {{{ */
       continue;
     }
 
-    for (hl = hostlist_head; hl != NULL; hl = hl->next)
+    for (hl = ptr->hostlist_head; hl != NULL; hl = hl->next)
       if (strcmp (userhost, hl->host) == 0)
         break;
 
@@ -210,8 +219,8 @@ static int ping_dispatch_all (pingobj_t *pingobj) /* {{{ */
       hl->pkg_missed++;
 
     /* if the host did not answer our last N packages, trigger a resolv. */
-    if ((ping_max_missed >= 0)
-        && (hl->pkg_missed >= ((uint32_t) ping_max_missed)))
+    if ((ptr->ping_max_missed >= 0)
+        && (hl->pkg_missed >= ((uint32_t) ptr->ping_max_missed)))
     { /* {{{ */
       /* we reset the missed package counter here, since we only want to
        * trigger a resolv every N packages and not every package _AFTER_ N
@@ -219,7 +228,7 @@ static int ping_dispatch_all (pingobj_t *pingobj) /* {{{ */
       hl->pkg_missed = 0;
 
       WARNING ("ping plugin: host %s has not answered %d PING requests,"
-          " triggering resolve", hl->host, ping_max_missed);
+          " triggering resolve", hl->host, ptr->ping_max_missed);
 
       /* we trigger the resolv simply be removeing and adding the host to our
        * ping object */
@@ -242,6 +251,7 @@ static int ping_dispatch_all (pingobj_t *pingobj) /* {{{ */
 
 static void *ping_thread (void *arg) /* {{{ */
 {
+  hostgroup_t *ptr = hostgroup_head;
   static pingobj_t *pingobj = NULL;
 
   struct timeval  tv_begin;
@@ -265,24 +275,24 @@ static void *ping_thread (void *arg) /* {{{ */
     return ((void *) -1);
   }
 
-  if (ping_source != NULL)
-    if (ping_setopt (pingobj, PING_OPT_SOURCE, (void *) ping_source) != 0)
+  if (ptr->ping_source != NULL)
+    if (ping_setopt (pingobj, PING_OPT_SOURCE, (void *) ptr->ping_source) != 0)
       ERROR ("ping plugin: Failed to set source address: %s",
           ping_get_error (pingobj));
 
 #ifdef HAVE_OPING_1_3
-  if (ping_device != NULL)
-    if (ping_setopt (pingobj, PING_OPT_DEVICE, (void *) ping_device) != 0)
+  if (ptr->ping_device != NULL)
+    if (ping_setopt (pingobj, PING_OPT_DEVICE, (void *) ptr->ping_device) != 0)
       ERROR ("ping plugin: Failed to set device: %s",
           ping_get_error (pingobj));
 #endif
 
-  ping_setopt (pingobj, PING_OPT_TIMEOUT, (void *) &ping_timeout);
-  ping_setopt (pingobj, PING_OPT_TTL, (void *) &ping_ttl);
+  ping_setopt (pingobj, PING_OPT_TIMEOUT, (void *) &ptr->ping_timeout);
+  ping_setopt (pingobj, PING_OPT_TTL, (void *) &ptr->ping_ttl);
 
   /* Add all the hosts to the ping object. */
   count = 0;
-  for (hl = hostlist_head; hl != NULL; hl = hl->next)
+  for (hl = ptr->hostlist_head; hl != NULL; hl = hl->next)
   {
     int tmp_status;
     tmp_status = ping_host_add (pingobj, hl->host);
@@ -306,7 +316,7 @@ static void *ping_thread (void *arg) /* {{{ */
     double temp_sec;
     double temp_nsec;
 
-    temp_nsec = modf (ping_interval, &temp_sec);
+    temp_nsec = modf (ptr->ping_interval, &temp_sec);
     ts_int.tv_sec  = (time_t) temp_sec;
     ts_int.tv_nsec = (long) (temp_nsec * 1000000000L);
   }
@@ -430,17 +440,20 @@ static int stop_thread (void) /* {{{ */
 
 static int ping_init (void) /* {{{ */
 {
-  if (hostlist_head == NULL)
+
+  hostgroup_t *ptr = hostgroup_head;
+
+  if (ptr->hostlist_head == NULL)
   {
     NOTICE ("ping plugin: No hosts have been configured.");
     return (-1);
   }
 
-  if (ping_timeout > ping_interval)
+  if (ptr->ping_timeout > ptr->ping_interval)
   {
-    ping_timeout = 0.9 * ping_interval;
+    ptr->ping_timeout = 0.9 * ptr->ping_interval;
     WARNING ("ping plugin: Timeout is greater than interval. "
-        "Will use a timeout of %gs.", ping_timeout);
+        "Will use a timeout of %gs.", ptr->ping_timeout);
   }
 
   if (start_thread () != 0)
@@ -471,6 +484,8 @@ static int config_set_string (const char *name, /* {{{ */
 
 static int ping_config (const char *key, const char *value) /* {{{ */
 {
+  hostgroup_t *ptr = hostgroup_head;
+
   if (strcasecmp (key, "Host") == 0)
   {
     hostlist_t *hl;
@@ -501,19 +516,19 @@ static int ping_config (const char *key, const char *value) /* {{{ */
     hl->pkg_missed = 0;
     hl->latency_total = 0.0;
     hl->latency_squared = 0.0;
-    hl->next = hostlist_head;
-    hostlist_head = hl;
+    hl->next = ptr->hostlist_head;
+    ptr->hostlist_head = hl;
   }
   else if (strcasecmp (key, "SourceAddress") == 0)
   {
-    int status = config_set_string (key, &ping_source, value);
+    int status = config_set_string (key, &ptr->ping_source, value);
     if (status != 0)
       return (status);
   }
 #ifdef HAVE_OPING_1_3
   else if (strcasecmp (key, "Device") == 0)
   {
-    int status = config_set_string (key, &ping_device, value);
+    int status = config_set_string (key, &ptr->ping_device, value);
     if (status != 0)
       return (status);
   }
@@ -522,7 +537,7 @@ static int ping_config (const char *key, const char *value) /* {{{ */
   {
     int ttl = atoi (value);
     if ((ttl > 0) && (ttl <= 255))
-      ping_ttl = ttl;
+      ptr->ping_ttl = ttl;
     else
       WARNING ("ping plugin: Ignoring invalid TTL %i.", ttl);
   }
@@ -532,7 +547,7 @@ static int ping_config (const char *key, const char *value) /* {{{ */
 
     tmp = atof (value);
     if (tmp > 0.0)
-      ping_interval = tmp;
+      ptr->ping_interval = tmp;
     else
       WARNING ("ping plugin: Ignoring invalid interval %g (%s)",
           tmp, value);
@@ -543,15 +558,15 @@ static int ping_config (const char *key, const char *value) /* {{{ */
 
     tmp = atof (value);
     if (tmp > 0.0)
-      ping_timeout = tmp;
+      ptr->ping_timeout = tmp;
     else
       WARNING ("ping plugin: Ignoring invalid timeout %g (%s)",
           tmp, value);
   }
   else if (strcasecmp (key, "MaxMissed") == 0)
   {
-    ping_max_missed = atoi (value);
-    if (ping_max_missed < 0)
+    ptr->ping_max_missed = atoi (value);
+    if (ptr->ping_max_missed < 0)
       INFO ("ping plugin: MaxMissed < 0, disabled re-resolving of hosts");
   }
   else
@@ -583,6 +598,7 @@ static void submit (const char *host, const char *type, /* {{{ */
 
 static int ping_read (void) /* {{{ */
 {
+  hostgroup_t *ptr = hostgroup_head;
   hostlist_t *hl;
 
   if (ping_thread_error != 0)
@@ -591,7 +607,7 @@ static int ping_read (void) /* {{{ */
 
     stop_thread ();
 
-    for (hl = hostlist_head; hl != NULL; hl = hl->next)
+    for (hl = ptr->hostlist_head; hl != NULL; hl = hl->next)
     {
       hl->pkg_sent = 0;
       hl->pkg_recv = 0;
@@ -604,7 +620,7 @@ static int ping_read (void) /* {{{ */
     return (-1);
   } /* if (ping_thread_error != 0) */
 
-  for (hl = hostlist_head; hl != NULL; hl = hl->next) /* {{{ */
+  for (hl = ptr->hostlist_head; hl != NULL; hl = hl->next) /* {{{ */
   {
     uint32_t pkg_sent;
     uint32_t pkg_recv;
@@ -669,13 +685,14 @@ static int ping_read (void) /* {{{ */
 
 static int ping_shutdown (void) /* {{{ */
 {
+  hostgroup_t *ptr = hostgroup_head;
   hostlist_t *hl;
 
   INFO ("ping plugin: Shutting down thread.");
   if (stop_thread () < 0)
     return (-1);
 
-  hl = hostlist_head;
+  hl = ptr->hostlist_head;
   while (hl != NULL)
   {
     hostlist_t *hl_next;
@@ -691,8 +708,24 @@ static int ping_shutdown (void) /* {{{ */
   return (0);
 } /* }}} int ping_shutdown */
 
+
+static hostgroup_t *create_hostgroup (void)
+{
+  hostgroup_t *ptr = malloc(sizeof(hostgroup_t));
+
+  memset(ptr, 0, sizeof(hostgroup_t));
+  ptr->ping_ttl = PING_DEF_TTL;
+  ptr->ping_interval = 1.0;
+  ptr->ping_timeout = 0.9;
+  ptr->ping_max_missed = -1;
+
+  return ptr;
+}
+
 void module_register (void)
 {
+  hostgroup_head = create_hostgroup();
+
   plugin_register_config ("ping", ping_config,
       config_keys, config_keys_num);
   plugin_register_init ("ping", ping_init);
