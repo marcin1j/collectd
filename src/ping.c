@@ -77,6 +77,8 @@ struct hostgroup_s
   double ping_timeout;
   int    ping_max_missed;
 
+  pingobj_t *pingobj;
+
   struct hostgroup_s *next;
 };
 typedef struct hostgroup_s hostgroup_t;
@@ -252,7 +254,6 @@ static int ping_dispatch_all (pingobj_t *pingobj) /* {{{ */
 static void *ping_thread (void *arg) /* {{{ */
 {
   hostgroup_t *ptr = hostgroup_head;
-  static pingobj_t *pingobj = NULL;
 
   struct timeval  tv_begin;
   struct timeval  tv_end;
@@ -266,8 +267,8 @@ static void *ping_thread (void *arg) /* {{{ */
 
   pthread_mutex_lock (&ping_lock);
 
-  pingobj = ping_construct ();
-  if (pingobj == NULL)
+  ptr->pingobj = ping_construct ();
+  if (ptr->pingobj == NULL)
   {
     ERROR ("ping plugin: ping_construct failed.");
     ping_thread_error = 1;
@@ -276,29 +277,29 @@ static void *ping_thread (void *arg) /* {{{ */
   }
 
   if (ptr->ping_source != NULL)
-    if (ping_setopt (pingobj, PING_OPT_SOURCE, (void *) ptr->ping_source) != 0)
+    if (ping_setopt (ptr->pingobj, PING_OPT_SOURCE, (void *) ptr->ping_source) != 0)
       ERROR ("ping plugin: Failed to set source address: %s",
-          ping_get_error (pingobj));
+          ping_get_error (ptr->pingobj));
 
 #ifdef HAVE_OPING_1_3
   if (ptr->ping_device != NULL)
-    if (ping_setopt (pingobj, PING_OPT_DEVICE, (void *) ptr->ping_device) != 0)
+    if (ping_setopt (ptr->pingobj, PING_OPT_DEVICE, (void *) ptr->ping_device) != 0)
       ERROR ("ping plugin: Failed to set device: %s",
-          ping_get_error (pingobj));
+          ping_get_error (ptr->pingobj));
 #endif
 
-  ping_setopt (pingobj, PING_OPT_TIMEOUT, (void *) &ptr->ping_timeout);
-  ping_setopt (pingobj, PING_OPT_TTL, (void *) &ptr->ping_ttl);
+  ping_setopt (ptr->pingobj, PING_OPT_TIMEOUT, (void *) &ptr->ping_timeout);
+  ping_setopt (ptr->pingobj, PING_OPT_TTL, (void *) &ptr->ping_ttl);
 
   /* Add all the hosts to the ping object. */
   count = 0;
   for (hl = ptr->hostlist_head; hl != NULL; hl = hl->next)
   {
     int tmp_status;
-    tmp_status = ping_host_add (pingobj, hl->host);
+    tmp_status = ping_host_add (ptr->pingobj, hl->host);
     if (tmp_status != 0)
       WARNING ("ping plugin: ping_host_add (%s) failed: %s",
-          hl->host, ping_get_error (pingobj));
+          hl->host, ping_get_error (ptr->pingobj));
     else
       count++;
   }
@@ -337,11 +338,11 @@ static void *ping_thread (void *arg) /* {{{ */
 
     pthread_mutex_unlock (&ping_lock);
 
-    status = ping_send (pingobj);
+    status = ping_send (ptr->pingobj);
     if (status < 0)
     {
       c_complain (LOG_ERR, &complaint, "ping plugin: ping_send failed: %s",
-          ping_get_error (pingobj));
+          ping_get_error (ptr->pingobj));
     }
     else
     {
@@ -355,7 +356,7 @@ static void *ping_thread (void *arg) /* {{{ */
       break;
 
     if (send_successful)
-      (void) ping_dispatch_all (pingobj);
+      (void) ping_dispatch_all (ptr->pingobj);
 
     if (gettimeofday (&tv_end, NULL) < 0)
     {
@@ -376,7 +377,7 @@ static void *ping_thread (void *arg) /* {{{ */
   } /* while (ping_thread_loop > 0) */
 
   pthread_mutex_unlock (&ping_lock);
-  ping_destroy (pingobj);
+  ping_destroy (ptr->pingobj);
 
   return ((void *) 0);
 } /* }}} void *ping_thread */
