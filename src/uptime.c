@@ -25,8 +25,7 @@
 #include "plugin.h"
 
 #if KERNEL_LINUX
-# define STAT_FILE "/proc/stat"
-/* Using /proc filesystem to retrieve the boot time, Linux only. */
+# include <sys/sysinfo.h>
 /* #endif KERNEL_LINUX */
 
 #elif HAVE_LIBKSTAT
@@ -69,67 +68,33 @@ static void uptime_submit (gauge_t value)
 	plugin_dispatch_values (&vl);
 }
 
-static time_t uptime_get_boottime (void) /* {{{ */
+/*
+ * On most unix systems the uptime is calculated by looking at the boot
+ * time (stored in unix time, since epoch) and the current one. We are
+ * going to do the same, reading the boot time value while executing
+ * the uptime_init function (there is no need to read, every time the
+ * plugin_read is called, a value that won't change). However, since
+ * uptime_init is run only once, if the function fails in retrieving
+ * the boot time, the plugin is unregistered and there is no chance to
+ * try again later. Nevertheless, this is very unlikely to happen.
+ */
+static time_t uptime_get_sys (void) /* {{{ */
 {
-
 	time_t result;
-
-	/*
-	 * On most unix systems the uptime is calculated by looking at the boot
-	 * time (stored in unix time, since epoch) and the current one. We are
-	 * going to do the same, reading the boot time value while executing
-	 * the uptime_init function (there is no need to read, every time the
-	 * plugin_read is called, a value that won't change). However, since
-	 * uptime_init is run only once, if the function fails in retrieving
-	 * the boot time, the plugin is unregistered and there is no chance to
-	 * try again later. Nevertheless, this is very unlikely to happen.
-	 */
-
 #if KERNEL_LINUX
-	unsigned long starttime;
-	char buffer[1024];
-	int ret;
-	FILE *fh;
+	struct sysinfo info;
+	int status;
 
-	ret = 0;
-
-	fh = fopen (STAT_FILE, "r");
-
-	if (fh == NULL)
+	status = sysinfo (&info);
+	if (status != 0)
 	{
 		char errbuf[1024];
-		ERROR ("uptime plugin: Cannot open "STAT_FILE": %s",
+		ERROR ("uptime plugin: error calling sysinfo: %s",
 			sstrerror (errno, errbuf, sizeof (errbuf)));
 		return (-1);
 	}
 
-	while (fgets (buffer, 1024, fh) != NULL)
-	{
-		/* look for the btime string and read the value */
-		ret = sscanf (buffer, "btime %lu", &starttime);
-		/* avoid further loops if btime has been found and read
-		 * correctly (hopefully) */
-		if (ret == 1)
-			break;
-	}
-
-	fclose (fh);
-
-	/* loop done, check if no value has been found/read */
-	if (ret != 1)
-	{
-		ERROR ("uptime plugin: No value read from "STAT_FILE"");
-		return (-1);
-	}
-
-	result = (time_t) starttime;
-
-	if (result == 0)
-	{
-		ERROR ("uptime plugin: btime read from "STAT_FILE", "
-				"but `boottime' is zero!");
-		return (-1);
-	}
+	result = (time_t) info.uptime;
 /* #endif KERNEL_LINUX */
 
 #elif HAVE_LIBKSTAT
@@ -166,9 +131,9 @@ static time_t uptime_get_boottime (void) /* {{{ */
 		return (-1);
 	}
 
-	result = (time_t) knp->value.ui32;
+	result = time(NULL) - (time_t) knp->value.ui32;
 
-	if (result == 0)
+	if (knp->value.ui32 == 0)
 	{
 		ERROR ("uptime plugin: kstat_data_lookup returned success, "
 			"but `boottime' is zero!");
@@ -195,9 +160,9 @@ static time_t uptime_get_boottime (void) /* {{{ */
 		return (-1);
 	}
 
-	result = boottv.tv_sec;
+	result = time(NULL) - boottv.tv_sec;
 
-	if (result == 0)
+	if (boottv.tv_sec == 0)
 	{
 		ERROR ("uptime plugin: sysctl(3) returned success, "
 				"but `boottime' is zero!");
@@ -224,19 +189,18 @@ static time_t uptime_get_boottime (void) /* {{{ */
 	if (hertz <= 0)
 		hertz = HZ;
 
-	result = time(NULL) - cputotal.lbolt / hertz;
+	result = cputotal.lbolt / hertz;
 #endif /* HAVE_PERFSTAT */
 
 	return (result);
-} /* }}} int uptime_get_boottime */
+} /* }}} int uptime_get_sys */
 
 static int uptime_read (void)
 {
 	gauge_t uptime;
 	time_t elapsed;
 
-	/* calculate the amount of time elapsed since boot, AKA uptime */
-	elapsed = time (NULL) - uptime_get_boottime ();
+	elapsed = uptime_get_sys ();
 
 	uptime = (gauge_t) elapsed;
 
