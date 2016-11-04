@@ -51,8 +51,6 @@
 /*
  * Global variables
  */
-/* boottime always used, no OS distinction */
-static time_t boottime;
 
 #if HAVE_LIBKSTAT
 extern kstat_ctl_t *kc;
@@ -71,8 +69,11 @@ static void uptime_submit (gauge_t value)
 	plugin_dispatch_values (&vl);
 }
 
-static int uptime_init (void) /* {{{ */
+static time_t uptime_get_boottime (void) /* {{{ */
 {
+
+	time_t result;
+
 	/*
 	 * On most unix systems the uptime is calculated by looking at the boot
 	 * time (stored in unix time, since epoch) and the current one. We are
@@ -121,9 +122,9 @@ static int uptime_init (void) /* {{{ */
 		return (-1);
 	}
 
-	boottime = (time_t) starttime;
+	result = (time_t) starttime;
 
-	if (boottime == 0)
+	if (result == 0)
 	{
 		ERROR ("uptime plugin: btime read from "STAT_FILE", "
 				"but `boottime' is zero!");
@@ -165,9 +166,9 @@ static int uptime_init (void) /* {{{ */
 		return (-1);
 	}
 
-	boottime = (time_t) knp->value.ui32;
+	result = (time_t) knp->value.ui32;
 
-	if (boottime == 0)
+	if (result == 0)
 	{
 		ERROR ("uptime plugin: kstat_data_lookup returned success, "
 			"but `boottime' is zero!");
@@ -194,9 +195,9 @@ static int uptime_init (void) /* {{{ */
 		return (-1);
 	}
 
-	boottime = boottv.tv_sec;
+	result = boottv.tv_sec;
 
-	if (boottime == 0)
+	if (result == 0)
 	{
 		ERROR ("uptime plugin: sysctl(3) returned success, "
 				"but `boottime' is zero!");
@@ -223,11 +224,11 @@ static int uptime_init (void) /* {{{ */
 	if (hertz <= 0)
 		hertz = HZ;
 
-	boottime = time(NULL) - cputotal.lbolt / hertz;
+	result = time(NULL) - cputotal.lbolt / hertz;
 #endif /* HAVE_PERFSTAT */
 
-	return (0);
-} /* }}} int uptime_init */
+	return (result);
+} /* }}} int uptime_get_boottime */
 
 static int uptime_read (void)
 {
@@ -235,7 +236,7 @@ static int uptime_read (void)
 	time_t elapsed;
 
 	/* calculate the amount of time elapsed since boot, AKA uptime */
-	elapsed = time (NULL) - boottime;
+	elapsed = time (NULL) - uptime_get_boottime ();
 
 	uptime = (gauge_t) elapsed;
 
@@ -246,6 +247,5 @@ static int uptime_read (void)
 
 void module_register (void)
 {
-	plugin_register_init ("uptime", uptime_init);
 	plugin_register_read ("uptime", uptime_read);
 } /* void module_register */
